@@ -1,8 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+
 import { useNavigate } from "react-router-dom";
 
 import AddFoodScanner from "../components/AddFoodScanner";
 import BarcodeConfirmation from "../components/BarcodeConfirmation";
+import LiveBarcodeOverlay from "../components/LiveBarcodeOverlay";
 
 import {
   scanExpiryWithOcr,
@@ -25,10 +31,20 @@ import {
   analyzeBarcodeImage,
 } from "../services/visionService";
 
+import {
+  preloadBarcodePreprocessor,
+  preprocessBarcodeImage,
+} from "../services/barcodePreprocessingService";
+
+
+// =====================================
+// SCAN FOOD COMPONENT
+// =====================================
 
 function ScanFood() {
 
   const navigate = useNavigate();
+
 
   // =====================================
   // REFERENCES
@@ -43,6 +59,8 @@ function ScanFood() {
 
   // =====================================
   // STATES
+  // ALL REACT HOOKS MUST BE INSIDE
+  // THE COMPONENT
   // =====================================
 
   const [selectedMode, setSelectedMode] =
@@ -81,6 +99,149 @@ function ScanFood() {
   const [analysisError, setAnalysisError] =
     useState("");
 
+  const [
+    liveBarcodeDetection,
+    setLiveBarcodeDetection,
+  ] = useState(null);
+
+  const [
+    preprocessingResult,
+    setPreprocessingResult,
+  ] = useState(null);
+
+  const [
+    preprocessingLoading,
+    setPreprocessingLoading,
+  ] = useState(false);
+
+
+  // =====================================
+  // BARCODE READY CONDITION
+  // ONLY ALLOW CAPTURE WHEN GREEN
+  // =====================================
+
+  const barcodeReady =
+
+    liveBarcodeDetection?.found === true &&
+
+    liveBarcodeDetection?.verified === true &&
+
+    liveBarcodeDetection?.boxes?.length === 1;
+
+  const [
+  capturedBarcode,
+  setCapturedBarcode,
+] = useState(null);
+
+
+  // =====================================
+  // PRELOAD OPENCV
+  // =====================================
+
+  useEffect(() => {
+
+    if (!import.meta.env.DEV) return;
+
+    if (selectedMode !== "barcode") return;
+
+    preloadBarcodePreprocessor()
+
+      .catch((error) => {
+
+        console.warn(
+          "OpenCV preload failed:",
+          error
+        );
+      });
+
+  }, [selectedMode]);
+
+
+  // =====================================
+  // AUTOMATIC IMAGE PREPROCESSING
+  // DEVELOPMENT DIAGNOSTICS
+  // =====================================
+
+  useEffect(() => {
+
+    if (
+      !import.meta.env.DEV ||
+      selectedMode !== "barcode" ||
+      capturedBarcode?.found ||
+      !capturedImage
+    ) {
+
+      setPreprocessingResult(null);
+      setPreprocessingLoading(false);
+
+      return;
+    }
+
+    let cancelled = false;
+
+    const processImage = async () => {
+
+      setPreprocessingResult(null);
+      setPreprocessingLoading(true);
+
+      try {
+
+        const result =
+          await preprocessBarcodeImage(
+            capturedImage
+          );
+
+        if (cancelled) return;
+
+        setPreprocessingResult(result);
+
+        console.log(
+          "OpenCV preprocessing result:",
+          {
+            found: result.found,
+            duration: result.duration,
+            width: result.width,
+            height: result.height,
+            reason: result.reason,
+          }
+        );
+
+      } catch (error) {
+
+        if (cancelled) return;
+
+        console.warn(
+          "Barcode preprocessing failed:",
+          error.message
+        );
+
+        setPreprocessingResult({
+          found: false,
+          reason: error.message,
+        });
+
+      } finally {
+
+        if (!cancelled) {
+
+          setPreprocessingLoading(false);
+        }
+      }
+    };
+
+    processImage();
+
+    return () => {
+
+      cancelled = true;
+    };
+
+  }, [
+    capturedImage,
+    selectedMode,
+    capturedBarcode,
+  ]);
+
 
   // =====================================
   // CAMERA LIFECYCLE
@@ -95,46 +256,63 @@ function ScanFood() {
 
       setCameraError("");
       setCameraReady(false);
+      setLiveBarcodeDetection(null);
 
       try {
 
         const stream =
           await navigator.mediaDevices.getUserMedia({
+
             video: {
+
               facingMode: {
                 ideal: cameraFacing,
               },
+
               width: {
                 ideal: 1920,
               },
+
               height: {
                 ideal: 1080,
               },
             },
+
             audio: false,
           });
 
+
+        // CAMERA CLOSED BEFORE INITIALIZATION
+
         if (cancelled) {
+
           stream.getTracks().forEach(
             (track) => track.stop()
           );
+
           return;
         }
 
+
         currentStream = stream;
+
         streamRef.current = stream;
 
         const video = videoRef.current;
 
+
         if (!video) {
+
           throw new Error(
             "Camera preview unavailable"
           );
         }
 
+
         video.srcObject = stream;
 
         await video.play();
+
 
         if (!cancelled) {
 
@@ -157,12 +335,16 @@ function ScanFood() {
           currentStream &&
           streamRef.current === currentStream
         ) {
+
           streamRef.current = null;
         }
 
         if (cancelled) return;
 
-        console.error("Camera error:", error);
+        console.error(
+          "Camera error:",
+          error
+        );
 
         setCameraError(
           "Camera access failed. Please allow camera permission and try again."
@@ -173,6 +355,9 @@ function ScanFood() {
     };
 
     openCamera();
+
+
+    // STOP CAMERA WHEN COMPONENT CLOSES
 
     return () => {
 
@@ -186,11 +371,15 @@ function ScanFood() {
         currentStream &&
         streamRef.current === currentStream
       ) {
+
         streamRef.current = null;
       }
     };
 
-  }, [cameraFacing, cameraRetry]);
+  }, [
+    cameraFacing,
+    cameraRetry,
+  ]);
 
 
   // =====================================
@@ -201,24 +390,34 @@ function ScanFood() {
 
     if (selectedMode !== "barcode") return;
 
-    console.log("Preloading barcode engines...");
+    console.log(
+      "Preloading barcode engines..."
+    );
 
-    // PRIMARY READER
+
+    // ZXING-WASM
 
     try {
+
       preloadBarcodeWasm();
+
     } catch (error) {
+
       console.warn(
         "ZXing-WASM preload failed:",
         error
       );
     }
 
-    // FIRST FALLBACK
+
+    // ZBAR-WASM
 
     try {
+
       preloadZbarWasm();
+
     } catch (error) {
+
       console.warn(
         "ZBar-WASM preload failed:",
         error
@@ -235,6 +434,7 @@ function ScanFood() {
   useEffect(() => {
 
     return () => {
+
       activeScanRef.current = null;
     };
 
@@ -248,11 +448,24 @@ function ScanFood() {
   const clearScan = () => {
 
     setCapturedImage(null);
+
     setScanImage(null);
+
     setProductResult(null);
+
     setExpiryResult(null);
+
     setBarcodeResult(null);
+
     setAnalysisError("");
+
+    setLiveBarcodeDetection(null);
+
+    setPreprocessingResult(null);
+
+    setPreprocessingLoading(false);
+
+    setCapturedBarcode(null);
   };
 
 
@@ -281,6 +494,7 @@ function ScanFood() {
     setCameraReady(false);
 
     setCameraFacing((current) =>
+
       current === "user"
         ? "environment"
         : "user"
@@ -295,6 +509,8 @@ function ScanFood() {
   const handleModeChange = (mode) => {
 
     if (activeScanRef.current) return;
+
+    if (mode === selectedMode) return;
 
     clearScan();
 
@@ -321,27 +537,338 @@ function ScanFood() {
 
 
   // =====================================
+  // AUTOMATIC BARCODE CROPPING
+  // USE DETECTED BARCODE COORDINATES
+  // =====================================
+
+  const createBarcodeCrop = (
+    sourceCanvas,
+    detection
+  ) => {
+
+    const box = detection?.boxes?.[0];
+
+    if (
+      !Array.isArray(box) ||
+      box.length !== 4
+    ) {
+
+      return null;
+    }
+
+
+    // ORIGINAL IMAGE DIMENSIONS
+
+    const imageWidth = sourceCanvas.width;
+
+    const imageHeight = sourceCanvas.height;
+
+
+    // VALIDATE DETECTED COORDINATES
+
+    const validPoints = box.every(
+      (point) =>
+
+        Number.isFinite(point?.x) &&
+        Number.isFinite(point?.y)
+    );
+
+    if (!validPoints) {
+
+      return null;
+    }
+
+
+    // CONVERT NORMALIZED COORDINATES
+    // INTO ACTUAL IMAGE PIXELS
+
+    const points = box.map((point) => ({
+
+      x: point.x * imageWidth,
+
+      y: point.y * imageHeight,
+    }));
+
+
+    // CALCULATE BOUNDING RECTANGLE
+
+    const minX = Math.min(
+      ...points.map((point) => point.x)
+    );
+
+    const maxX = Math.max(
+      ...points.map((point) => point.x)
+    );
+
+    const minY = Math.min(
+      ...points.map((point) => point.y)
+    );
+
+    const maxY = Math.max(
+      ...points.map((point) => point.y)
+    );
+
+
+    const barcodeWidth = maxX - minX;
+
+    const barcodeHeight = maxY - minY;
+
+
+    if (
+      barcodeWidth < 10 ||
+      barcodeHeight < 10
+    ) {
+
+      return null;
+    }
+
+
+    // ===================================
+    // ADD EXTRA MARGINS
+    // ===================================
+
+    const paddingX = Math.max(
+
+      20,
+
+      barcodeWidth * 0.25
+    );
+
+    const paddingY = Math.max(
+
+      20,
+
+      barcodeHeight * 0.35
+    );
+
+
+    // KEEP CROP INSIDE IMAGE BOUNDARIES
+
+    const left = Math.max(
+
+      0,
+
+      Math.floor(minX - paddingX)
+    );
+
+    const top = Math.max(
+
+      0,
+
+      Math.floor(minY - paddingY)
+    );
+
+    const right = Math.min(
+
+      imageWidth,
+
+      Math.ceil(maxX + paddingX)
+    );
+
+    const bottom = Math.min(
+
+      imageHeight,
+
+      Math.ceil(maxY + paddingY)
+    );
+
+
+    const cropWidth = right - left;
+
+    const cropHeight = bottom - top;
+
+
+    if (
+      cropWidth <= 0 ||
+      cropHeight <= 0
+    ) {
+
+      return null;
+    }
+
+
+    // ===================================
+    // CREATE AUTOMATIC CROP
+    // ===================================
+
+    const cropCanvas =
+      document.createElement("canvas");
+
+    cropCanvas.width = cropWidth;
+
+    cropCanvas.height = cropHeight;
+
+
+    const context =
+      cropCanvas.getContext("2d");
+
+    if (!context) return null;
+
+
+    context.drawImage(
+
+      sourceCanvas,
+
+      left,
+      top,
+
+      cropWidth,
+      cropHeight,
+
+      0,
+      0,
+
+      cropWidth,
+      cropHeight
+    );
+
+
+    console.log(
+
+      "Automatic barcode crop created:",
+
+      cropWidth,
+
+      cropHeight
+    );
+
+
+    return cropCanvas.toDataURL(
+      "image/png"
+    );
+  };
+
+
+  // =====================================
   // CAPTURE PHOTO
   // =====================================
 
   const capturePhoto = () => {
+        // =====================================
+    // CAPTURE ALREADY VERIFIED BARCODE
+    // =====================================
+
+    if (selectedMode === "barcode") {
+
+      const detection = liveBarcodeDetection;
+
+      if (
+        !barcodeReady ||
+        !cameraReady ||
+        cameraError ||
+        activeScanRef.current ||
+        !detection?.barcode ||
+        !detection?.frameImage ||
+        !Number.isFinite(detection.capturedAt)
+      ) {
+        return;
+      }
+
+
+      // PREVENT STALE BARCODE CAPTURE
+
+      const detectionAge =
+        performance.now() - detection.capturedAt;
+
+      if (detectionAge > 1500) {
+
+        console.warn(
+          "Barcode detection expired. Hold steady."
+        );
+
+        return;
+      }
+
+
+  // RESET PREVIOUS RESULTS
+
+  setBarcodeResult(null);
+  setProductResult(null);
+  setExpiryResult(null);
+  setAnalysisError("");
+  setScanImage(null);
+  setPreprocessingResult(null);
+
+
+  // STORE VERIFIED BARCODE NUMBER
+
+  setCapturedBarcode({
+
+    found: true,
+
+    barcode: detection.barcode,
+
+    source: "quagga2",
+
+    needsConfirmation: true,
+
+    duration: detection.duration,
+  });
+
+
+  // STORE EXACT VERIFIED PHOTOGRAPH
+
+  setCapturedImage(
+    detection.frameImage
+  );
+
+
+  console.log(
+    "Verified barcode captured:",
+    detection.barcode
+  );
+
+  console.log(
+    "Recognition source: Quagga2"
+  );
+
+  return;
+}
 
     const video = videoRef.current;
+
     const canvas = canvasRef.current;
+
+
+    // BARCODE MUST BE GREEN
+
+    if (
+      selectedMode === "barcode" &&
+      !barcodeReady
+    ) {
+
+      console.log(
+        "Waiting for verified barcode..."
+      );
+
+      return;
+    }
+
+
+    // VALIDATE CAMERA
 
     if (
       !video ||
       !canvas ||
       !cameraReady ||
-      activeScanRef.current
+      activeScanRef.current ||
+      video.readyState < 2
     ) {
+
       return;
     }
 
+
     const videoWidth = video.videoWidth;
+
     const videoHeight = video.videoHeight;
 
-    if (!videoWidth || !videoHeight) return;
+
+    if (!videoWidth || !videoHeight) {
+
+      return;
+    }
+
 
     const isBarcode =
       selectedMode === "barcode";
@@ -354,11 +881,16 @@ function ScanFood() {
     const previewMax =
       isBarcode ? 1920 : 1280;
 
+
     const previewScale = Math.min(
+
       1,
+
       previewMax / videoWidth,
+
       previewMax / videoHeight
     );
+
 
     canvas.width = Math.round(
       videoWidth * previewScale
@@ -367,6 +899,7 @@ function ScanFood() {
     canvas.height = Math.round(
       videoHeight * previewScale
     );
+
 
     const previewContext =
       canvas.getContext("2d");
@@ -377,10 +910,16 @@ function ScanFood() {
     // RESET PREVIOUS RESULTS
 
     setScanImage(null);
+
     setProductResult(null);
+
     setExpiryResult(null);
+
     setBarcodeResult(null);
+
     setAnalysisError("");
+
+    setPreprocessingResult(null);
 
 
     // ===================================
@@ -388,6 +927,9 @@ function ScanFood() {
     // ===================================
 
     previewContext.save();
+
+
+    // DO NOT MIRROR BARCODE IMAGES
 
     if (
       cameraFacing === "user" &&
@@ -402,169 +944,76 @@ function ScanFood() {
       previewContext.scale(-1, 1);
     }
 
+
     previewContext.drawImage(
+
       video,
+
       0,
       0,
+
       videoWidth,
       videoHeight,
+
       0,
       0,
+
       canvas.width,
       canvas.height
     );
 
+
     previewContext.restore();
 
+
+    // PRESERVE FULL ORIGINAL IMAGE
+
     const fullImage = canvas.toDataURL(
+
       "image/jpeg",
+
       isBarcode ? 0.95 : 0.75
     );
 
 
     // ===================================
-    // BARCODE-SPECIFIC IMAGE CROP
+    // AUTOMATIC BARCODE REGION CROP
     // ===================================
 
     if (isBarcode) {
 
-      const frame = scannerFrameRef.current;
+      const automaticCrop =
+        createBarcodeCrop(
 
-      if (frame) {
+          canvas,
 
-        const videoRect =
-          video.getBoundingClientRect();
+          liveBarcodeDetection
+        );
 
-        const frameRect =
-          frame.getBoundingClientRect();
 
-        const fit =
-          getComputedStyle(video).objectFit;
+      if (automaticCrop) {
 
-        const scale =
-          fit === "contain"
-            ? Math.min(
-                videoRect.width / videoWidth,
-                videoRect.height / videoHeight
-              )
-            : Math.max(
-                videoRect.width / videoWidth,
-                videoRect.height / videoHeight
-              );
+        setScanImage(automaticCrop);
 
-        const scaleX =
-          fit === "fill"
-            ? videoRect.width / videoWidth
-            : scale;
+        console.log(
+          "Using automatic barcode crop"
+        );
 
-        const scaleY =
-          fit === "fill"
-            ? videoRect.height / videoHeight
-            : scale;
+      } else {
 
-        if (scaleX > 0 && scaleY > 0) {
+        console.warn(
+          "Automatic crop unavailable. Using original image."
+        );
 
-          const offsetX =
-            (
-              videoRect.width -
-              videoWidth * scaleX
-            ) / 2;
-
-          const offsetY =
-            (
-              videoRect.height -
-              videoHeight * scaleY
-            ) / 2;
-
-          const left = Math.max(
-            0,
-            (
-              frameRect.left -
-              videoRect.left -
-              offsetX
-            ) / scaleX
-          );
-
-          const top = Math.max(
-            0,
-            (
-              frameRect.top -
-              videoRect.top -
-              offsetY
-            ) / scaleY
-          );
-
-          const right = Math.min(
-            videoWidth,
-            (
-              frameRect.right -
-              videoRect.left -
-              offsetX
-            ) / scaleX
-          );
-
-          const bottom = Math.min(
-            videoHeight,
-            (
-              frameRect.bottom -
-              videoRect.top -
-              offsetY
-            ) / scaleY
-          );
-
-          const width =
-            Math.floor(right - left);
-
-          const height =
-            Math.floor(bottom - top);
-
-          if (width > 0 && height > 0) {
-
-            const sourceX =
-              cameraFacing === "user"
-                ? videoWidth - right
-                : left;
-
-            const barcodeCanvas =
-              document.createElement("canvas");
-
-            barcodeCanvas.width = width;
-            barcodeCanvas.height = height;
-
-            const ctx =
-              barcodeCanvas.getContext("2d");
-
-            if (ctx) {
-
-              ctx.drawImage(
-                video,
-                sourceX,
-                top,
-                width,
-                height,
-                0,
-                0,
-                width,
-                height
-              );
-
-              setScanImage(
-                barcodeCanvas.toDataURL(
-                  "image/png"
-                )
-              );
-
-              console.log(
-                "Barcode scanner frame extracted:",
-                width,
-                height
-              );
-            }
-          }
-        }
+        setScanImage(null);
       }
 
+
       setCapturedImage(fullImage);
+
+      console.log(
+        "Verified barcode photo captured"
+      );
 
       return;
     }
@@ -580,6 +1029,7 @@ function ScanFood() {
     const cropContext =
       cropCanvas.getContext("2d");
 
+
     if (cropContext) {
 
       const cropWidth =
@@ -588,53 +1038,75 @@ function ScanFood() {
       const cropHeight =
         videoHeight * 0.8;
 
+
       const cropX =
         (videoWidth - cropWidth) / 2;
 
       const cropY =
         (videoHeight - cropHeight) / 2;
 
+
       const cropScale = Math.min(
+
         1,
+
         1024 / cropWidth,
+
         1024 / cropHeight
       );
 
+
       cropCanvas.width = Math.round(
+
         cropWidth * cropScale
       );
 
       cropCanvas.height = Math.round(
+
         cropHeight * cropScale
       );
 
+
       cropContext.drawImage(
+
         video,
+
         cropX,
         cropY,
+
         cropWidth,
         cropHeight,
+
         0,
         0,
+
         cropCanvas.width,
         cropCanvas.height
       );
 
+
       setScanImage(
+
         cropCanvas.toDataURL(
+
           "image/jpeg",
+
           0.75
         )
       );
+
 
       console.log(
         "Cropped scan image created"
       );
     }
 
+
     setCapturedImage(fullImage);
 
-    console.log("Full preview created");
+    console.log(
+      "Full preview created"
+    );
   };
 
 
@@ -644,30 +1116,43 @@ function ScanFood() {
 
   const handleUsePhoto = async () => {
 
+
     // PREVENT DUPLICATE REQUESTS
 
     if (
       !capturedImage ||
       activeScanRef.current
     ) {
+
       return;
     }
+
 
     const scanToken = {};
 
     activeScanRef.current = scanToken;
 
+
     const isCurrent = () =>
+
       activeScanRef.current === scanToken;
 
+
     const imageToAnalyze =
+
       scanImage || capturedImage;
 
+
     setAnalyzing(true);
+
     setAnalysisError("");
+
     setProductResult(null);
+
     setExpiryResult(null);
+
     setBarcodeResult(null);
+
 
     try {
 
@@ -681,57 +1166,85 @@ function ScanFood() {
 
         let ocrText = "";
 
+
         console.log(
           "Running PaddleOCR before Gemini..."
         );
 
+
         try {
 
           const ocrResult =
+
             await scanProductTextWithOcr(
+
               imageToAnalyze
             );
 
-          ocrText = ocrResult.text || "";
+
+          ocrText =
+            ocrResult.text || "";
+
 
           console.log(
+
             "Product OCR text:",
+
             ocrText
           );
 
         } catch (ocrError) {
 
           console.warn(
+
             "Product OCR failed. Continuing with Gemini image recognition.",
+
             ocrError
           );
         }
 
+
         if (!isCurrent()) return;
 
+
         console.log(
+
           ocrText
+
             ? "Sending image + OCR text to Gemini..."
+
             : "No useful OCR text. Sending image to Gemini..."
         );
 
+
         const data =
+
           await analyzeProductImage(
+
             imageToAnalyze,
+
             ocrText
           );
 
+
         if (!isCurrent()) return;
 
+
         console.log(
+
           "Product response:",
+
           data
         );
 
+
         setProductResult({
+
           ...data.product,
+
           detectedText: ocrText,
         });
+
 
         return;
       }
@@ -744,19 +1257,29 @@ function ScanFood() {
 
       if (selectedMode === "expiry") {
 
-        console.log("Running local OCR...");
+        console.log(
+          "Running local OCR..."
+        );
+
 
         const ocrResult =
+
           await scanExpiryWithOcr(
+
             imageToAnalyze
           );
 
+
         if (!isCurrent()) return;
 
+
         console.log(
+
           "OCR result:",
+
           ocrResult
         );
+
 
         // LOCAL OCR SUCCESS
 
@@ -767,28 +1290,40 @@ function ScanFood() {
           return;
         }
 
+
         // GEMINI FALLBACK
 
         console.log(
           "OCR failed. Using Gemini fallback..."
         );
 
+
         const data =
+
           await analyzeExpiryImage(
+
             imageToAnalyze
           );
 
+
         if (!isCurrent()) return;
 
+
         console.log(
+
           "Gemini expiry response:",
+
           data
         );
 
+
         setExpiryResult({
+
           ...data.expiry,
+
           source: "gemini-fallback",
         });
+
 
         return;
       }
@@ -799,16 +1334,61 @@ function ScanFood() {
       // =================================
 
       if (selectedMode === "barcode") {
+          // =====================================
+// REUSE VERIFIED BARCODE NUMBER
+// =====================================
 
-        const startTime = performance.now();
+if (capturedBarcode?.found) {
+
+  const startTime = performance.now();
+
+  setBarcodeResult(capturedBarcode);
+
+  console.log(
+    "Using verified barcode:",
+    capturedBarcode.barcode
+  );
+
+  console.log(
+    "Source: Quagga2"
+  );
+
+  console.log(
+    "ZXing skipped"
+  );
+
+  console.log(
+    "ZBar skipped"
+  );
+
+  console.log(
+    "Gemini skipped"
+  );
+
+  console.log(
+    "Result processing time:",
+    Math.round(
+      performance.now() - startTime
+    ),
+    "ms"
+  );
+
+  return;
+}
+        const startTime =
+          performance.now();
+
 
         const logTotal = () => {
 
           console.log(
+
             "Total scanning time:",
+
             Math.round(
               performance.now() - startTime
             ),
+
             "ms"
           );
         };
@@ -818,32 +1398,46 @@ function ScanFood() {
         // PRIMARY READER — ZXING-WASM
         // ===============================
 
-        console.log("Starting ZXing-WASM...");
+        console.log(
+          "Starting ZXing-WASM..."
+        );
+
 
         let localResult = null;
+
 
         try {
 
           localResult =
+
             await scanBarcodeWithWasm(
+
               capturedImage,
+
               scanImage
             );
 
         } catch (error) {
 
           console.warn(
+
             "ZXing-WASM failed:",
+
             error
           );
         }
 
+
         if (!isCurrent()) return;
 
+
         console.log(
+
           "ZXing-WASM result:",
+
           localResult
         );
+
 
         // ZXING SUCCESS
 
@@ -851,10 +1445,14 @@ function ScanFood() {
 
           setBarcodeResult(localResult);
 
+
           console.log(
+
             "ZXing barcode detected:",
+
             localResult.barcode
           );
+
 
           logTotal();
 
@@ -870,30 +1468,42 @@ function ScanFood() {
           "ZXing failed. Starting ZBar-WASM..."
         );
 
+
         let zbarResult = null;
+
 
         try {
 
           zbarResult =
+
             await scanBarcodeWithZbar(
+
               capturedImage,
+
               scanImage
             );
 
         } catch (error) {
 
           console.warn(
+
             "ZBar-WASM failed:",
+
             error
           );
         }
 
+
         if (!isCurrent()) return;
 
+
         console.log(
+
           "ZBar-WASM result:",
+
           zbarResult
         );
+
 
         // ZBAR SUCCESS
 
@@ -901,10 +1511,14 @@ function ScanFood() {
 
           setBarcodeResult(zbarResult);
 
+
           console.log(
+
             "ZBar barcode detected:",
+
             zbarResult.barcode
           );
+
 
           logTotal();
 
@@ -920,23 +1534,33 @@ function ScanFood() {
           "Both local scanners failed."
         );
 
+
         console.log(
           "Activating direct Gemini fallback..."
         );
 
+
         const data =
+
           await analyzeBarcodeImage(
+
             capturedImage
           );
 
+
         if (!isCurrent()) return;
+
 
         const result = data.barcode;
 
+
         console.log(
+
           "Gemini barcode result:",
+
           result
         );
+
 
         logTotal();
 
@@ -953,31 +1577,43 @@ function ScanFood() {
         }
 
 
-        // GEMINI RECOGNITION SUCCESS
+        // GEMINI SUCCESS
 
         setBarcodeResult(result);
 
+
         console.log(
+
           "Gemini barcode detected:",
+
           result.barcode
         );
 
+
         return;
       }
+
 
     } catch (error) {
 
       if (!isCurrent()) return;
 
+
       console.error(
+
         "Scanner error:",
+
         error
       );
 
+
       setAnalysisError(
+
         error.message ||
+
         "Could not analyze image."
       );
+
 
     } finally {
 
@@ -998,10 +1634,12 @@ function ScanFood() {
   const getModeTitle = () => {
 
     if (selectedMode === "expiry") {
+
       return "Scan Expiry Date";
     }
 
     if (selectedMode === "barcode") {
+
       return "Scan Barcode";
     }
 
@@ -1016,23 +1654,33 @@ function ScanFood() {
   const getHelpText = () => {
 
     if (selectedMode === "expiry") {
+
       return "Point the camera clearly at the expiry date.";
     }
 
+
     if (selectedMode === "barcode") {
-      return "Place the barcode inside the camera frame.";
+
+      return barcodeReady
+
+        ? "Barcode verified. Tap the green capture button."
+
+        : "Point the camera at the barcode and wait for the green outline.";
     }
+
 
     return "Point the camera at the food or packaging.";
   };
 
 
   // =====================================
-  // CHECK BARCODE RESULT
+  // BARCODE RESULT
   // =====================================
 
   const hasBarcode =
+
     selectedMode === "barcode" &&
+
     Boolean(barcodeResult?.found);
 
 
@@ -1044,66 +1692,138 @@ function ScanFood() {
 
     <main className="scan-page">
 
+
+      {/* ============================= */}
       {/* TOP BAR */}
+      {/* ============================= */}
 
       <div className="scan-topbar">
 
         <button
+
           className="scan-close-button"
+
           onClick={handleClose}
+
           type="button"
+
           aria-label="Close scanner"
         >
+
           ✕
+
         </button>
 
+
         <h1>Add Food</h1>
+
 
         <div className="scan-topbar-space" />
 
       </div>
 
 
+      {/* ============================= */}
       {/* CAMERA AREA */}
+      {/* ============================= */}
 
-      <div className="scanner-camera">
+      <div
+
+        className="scanner-camera"
+
+        style={{
+          position: "relative",
+        }}
+      >
+
 
         {/* CAMERA PREVIEW */}
 
         <video
+
           ref={videoRef}
+
           style={{
+
             display: capturedImage
+
               ? "none"
+
               : undefined,
           }}
+
           className={
+
             cameraFacing === "user"
+
               ? "scanner-video selfie-camera"
+
               : "scanner-video"
           }
+
           autoPlay
+
           playsInline
+
           muted
+        />
+
+
+        {/* =========================== */}
+        {/* LIVE BARCODE LOCALIZATION */}
+        {/* =========================== */}
+
+        <LiveBarcodeOverlay
+
+          videoRef={videoRef}
+
+          enabled={
+
+            selectedMode === "barcode" &&
+
+            cameraReady &&
+
+            !cameraError &&
+
+            !capturedImage &&
+
+            !analyzing
+          }
+
+          mirrored={
+            cameraFacing === "user"
+          }
+
+          onDetectionChange={
+            setLiveBarcodeDetection
+          }
         />
 
 
         {/* CAPTURED IMAGE */}
 
         {capturedImage && (
+
           <img
+
             src={capturedImage}
+
             alt="Captured food"
+
             className="captured-image"
           />
+
         )}
 
 
         {/* ANALYZING INDICATOR */}
 
         {analyzing && (
+
           <div
+
             className="scanner-analyzing"
+
             role="status"
           >
 
@@ -1112,10 +1832,13 @@ function ScanFood() {
             <p>Analyzing image...</p>
 
           </div>
+
         )}
 
 
+        {/* =========================== */}
         {/* PRODUCT RESULT */}
+        {/* =========================== */}
 
         {productResult && (
 
@@ -1127,36 +1850,56 @@ function ScanFood() {
 
                 <h3>✨ Product Recognized</h3>
 
+
                 <p>
+
                   <strong>Name:</strong>{" "}
+
                   {productResult.productName}
+
                 </p>
 
+
                 <p>
+
                   <strong>Category:</strong>{" "}
+
                   {productResult.category}
+
                 </p>
 
+
                 <p>
+
                   <strong>
                     Suggested storage:
                   </strong>{" "}
+
                   {
                     productResult
                       .suggestedStorageLocation
                   }
+
                 </p>
 
+
                 <p>
+
                   <strong>Confidence:</strong>{" "}
+
                   {productResult.productConfidence}%
+
                 </p>
+
 
                 {productResult.expiryDateFound ? (
 
                   <p>
+
                     <strong>Expiry:</strong>{" "}
+
                     {productResult.expiryDate}
+
                   </p>
 
                 ) : (
@@ -1165,8 +1908,11 @@ function ScanFood() {
 
                 )}
 
+
                 {productResult.notes && (
+
                   <p>{productResult.notes}</p>
+
                 )}
 
               </>
@@ -1187,10 +1933,13 @@ function ScanFood() {
             )}
 
           </div>
+
         )}
 
 
+        {/* =========================== */}
         {/* EXPIRY RESULT */}
+        {/* =========================== */}
 
         {expiryResult && (
 
@@ -1198,32 +1947,48 @@ function ScanFood() {
 
             <h3>📅 Expiry Scan</h3>
 
+
             {expiryResult.found ? (
 
               <>
 
                 <p>
+
                   <strong>Expiry Date:</strong>{" "}
+
                   {expiryResult.expiryDate}
+
                 </p>
 
+
                 <p>
+
                   <strong>Detected:</strong>{" "}
+
                   {expiryResult.originalText}
+
                 </p>
 
+
                 <p>
+
                   <strong>Confidence:</strong>{" "}
+
                   {expiryResult.confidence}%
+
                 </p>
 
+
                 <p>
+
                   <strong>Source:</strong>{" "}
 
                   {
                     expiryResult.source ===
                       "local-ocr"
+
                       ? "Local OCR"
+
                       : "Gemini fallback"
                   }
 
@@ -1234,36 +1999,51 @@ function ScanFood() {
             ) : (
 
               <p>
+
                 No clear expiry date was found.
+
                 Try taking a closer photo.
+
               </p>
 
             )}
 
           </div>
+
         )}
 
 
+        {/* =========================== */}
         {/* SWITCH CAMERA */}
+        {/* =========================== */}
 
         {!capturedImage &&
           !cameraError &&
           cameraReady && (
 
             <button
+
               className="switch-camera-button"
+
               onClick={switchCamera}
+
               type="button"
+
               aria-label="Switch camera"
+
               title="Switch camera"
             >
+
               🔄
+
             </button>
 
           )}
 
 
+        {/* =========================== */}
         {/* CAMERA ERROR */}
+        {/* =========================== */}
 
         {cameraError && (
 
@@ -1273,141 +2053,224 @@ function ScanFood() {
 
             <p>{cameraError}</p>
 
+
             <button
+
               type="button"
+
               onClick={() =>
+
                 setCameraRetry(
+
                   (current) => current + 1
                 )
               }
             >
+
               Try Again
+
             </button>
 
           </div>
+
         )}
 
 
+        {/* =========================== */}
         {/* CAMERA LOADING */}
+        {/* =========================== */}
 
         {!cameraReady &&
           !cameraError &&
           !capturedImage && (
 
             <div className="camera-loading">
+
               Starting camera...
+
             </div>
 
           )}
 
 
-        {/* SCANNER FRAME */}
+        {/* =========================== */}
+        {/* FIXED FRAME */}
+        {/* PRODUCT AND EXPIRY ONLY */}
+        {/* =========================== */}
 
-        {!cameraError && !hasBarcode && (
+        {!cameraError &&
+          selectedMode !== "barcode" && (
 
-          <div
-            className="scanner-frame"
-            ref={scannerFrameRef}
-          >
+            <div
 
-            <span className="corner top-left" />
+              className="scanner-frame"
 
-            <span className="corner top-right" />
+              ref={scannerFrameRef}
+            >
 
-            <span className="corner bottom-left" />
+              <span className="corner top-left" />
 
-            <span className="corner bottom-right" />
+              <span className="corner top-right" />
 
-            {!capturedImage && (
+              <span className="corner bottom-left" />
 
-              <div className="scanner-mode-title">
+              <span className="corner bottom-right" />
 
-                <span>📷</span>
 
-                <h2>{getModeTitle()}</h2>
+              {!capturedImage && (
 
-              </div>
+                <div className="scanner-mode-title">
 
-            )}
+                  <span>📷</span>
 
-          </div>
+                  <h2>{getModeTitle()}</h2>
 
-        )}
+                </div>
+
+              )}
+
+            </div>
+
+          )}
 
       </div>
 
 
+      {/* ============================= */}
       {/* HIDDEN CANVAS */}
+      {/* ============================= */}
 
       <canvas
+
         ref={canvasRef}
+
         style={{
           display: "none",
         }}
       />
 
 
+      {/* ============================= */}
       {/* BOTTOM CONTROLS */}
+      {/* ============================= */}
 
       <div className="scanner-bottom-panel">
-        {/* TEMPORARY BARCODE IMAGE DEBUGGER */}
 
-{import.meta.env.DEV &&
-  selectedMode === "barcode" &&
-  scanImage && (
 
-    <div style={{
-      padding: "10px",
-      background: "#ffffff",
-      color: "#000000",
-    }}>
+        {/* =========================== */}
+        {/* SCANNER MODE SELECTION */}
+        {/* =========================== */}
 
-      <p>Actual barcode crop</p>
-
-      <img
-        src={scanImage}
-        alt="Barcode crop"
-        style={{
-          width: "100%",
-          maxWidth: "400px",
-          objectFit: "contain",
-        }}
-      />
-
-      <a
-        href={scanImage}
-        download="barcode-crop.png"
-      >
-        Download cropped image
-      </a>
-
-    </div>
-)}
         {!capturedImage && (
 
           <>
 
             <AddFoodScanner
+
               selectedMode={selectedMode}
+
               onSelectMode={handleModeChange}
             />
 
+
+            {/* ======================= */}
+            {/* INTELLIGENT CAPTURE */}
+            {/* ======================= */}
+
             <button
+
               className="capture-button"
+
               onClick={capturePhoto}
+
               disabled={
+
                 !cameraReady ||
+
                 Boolean(cameraError) ||
-                analyzing
+
+                analyzing ||
+
+                (
+                  selectedMode === "barcode" &&
+                  !barcodeReady
+                )
               }
+
+              style={{
+
+                borderColor:
+
+                  selectedMode === "barcode" &&
+                  barcodeReady
+
+                    ? "#22c55e"
+
+                    : undefined,
+
+
+                opacity:
+
+                  selectedMode === "barcode" &&
+                  !barcodeReady
+
+                    ? 0.4
+
+                    : 1,
+
+
+                cursor:
+
+                  selectedMode === "barcode" &&
+                  !barcodeReady
+
+                    ? "not-allowed"
+
+                    : undefined,
+              }}
+
               type="button"
+
               aria-label="Capture image"
             >
-              <span />
+
+              <span
+
+                style={{
+
+                  background:
+
+                    selectedMode === "barcode" &&
+                    barcodeReady
+
+                      ? "#22c55e"
+
+                      : undefined,
+                }}
+              />
+
             </button>
 
-            <p className="scanner-help-text">
+
+            <p
+
+              className="scanner-help-text"
+
+              style={{
+
+                color:
+
+                  selectedMode === "barcode" &&
+                  barcodeReady
+
+                    ? "#22c55e"
+
+                    : undefined,
+              }}
+            >
+
               {getHelpText()}
+
             </p>
 
           </>
@@ -1415,30 +2278,47 @@ function ScanFood() {
         )}
 
 
+        {/* =========================== */}
         {/* PHOTO PREVIEW ACTIONS */}
+        {/* =========================== */}
 
         {capturedImage && !hasBarcode && (
 
           <div className="capture-actions">
 
             <button
+
               className="retake-button"
+
               onClick={handleRetake}
+
               disabled={analyzing}
+
               type="button"
             >
+
               Retake
+
             </button>
 
+
             <button
+
               className="use-photo-button"
+
               onClick={handleUsePhoto}
+
               disabled={analyzing}
+
               type="button"
             >
+
               {analyzing
+
                 ? "Analyzing..."
+
                 : "Use Photo"}
+
             </button>
 
           </div>
@@ -1446,31 +2326,278 @@ function ScanFood() {
         )}
 
 
+        {/* =========================== */}
         {/* ANALYSIS ERROR */}
+        {/* =========================== */}
 
         {analysisError && (
 
           <p
+
             className="scanner-help-text"
+
             role="alert"
           >
+
             {analysisError}
+
           </p>
 
         )}
 
 
+        {/* =========================== */}
         {/* BARCODE CONFIRMATION */}
+        {/* =========================== */}
 
         {hasBarcode && (
 
           <BarcodeConfirmation
-            key={barcodeResult.barcode}
+
+            key={
+
+              `${barcodeResult.source}-${barcodeResult.barcode}`
+
+            }
+
             barcodeResult={barcodeResult}
+
             onScanAgain={handleRetake}
           />
 
         )}
+
+
+        {/* =========================== */}
+        {/* INTELLIGENT BARCODE DEBUGGER */}
+        {/* DEVELOPMENT ONLY */}
+        {/* =========================== */}
+
+        {import.meta.env.DEV &&
+          selectedMode === "barcode" &&
+          capturedImage && (
+
+            <div
+
+              style={{
+
+                padding: "15px",
+
+                margin: "10px",
+
+                background: "#ffffff",
+
+                color: "#111111",
+
+                borderRadius: "12px",
+              }}
+            >
+
+              <h2>Intelligent Barcode Processing</h2>
+
+
+              {/* AUTOMATIC CROP */}
+
+              {scanImage && (
+
+                <>
+
+                  <h3>
+                    Stage 1 — Automatic Barcode Crop
+                  </h3>
+
+
+                  <img
+
+                    src={scanImage}
+
+                    alt="Automatically cropped barcode"
+
+                    style={{
+
+                      width: "100%",
+
+                      maxWidth: "500px",
+
+                      objectFit: "contain",
+
+                      border: "2px solid green",
+
+                      borderRadius: "8px",
+                    }}
+
+                    onLoad={(event) => {
+
+                      console.log(
+
+                        "Automatic crop resolution:",
+
+                        event.currentTarget.naturalWidth,
+
+                        event.currentTarget.naturalHeight
+                      );
+                    }}
+                  />
+
+
+                  <p>
+
+                    Image size:{" "}
+
+                    {Math.round(
+
+                      (
+                        scanImage.split(",")[1]?.length || 0
+                      ) * 0.75 / 1024
+
+                    )} KB (approx.)
+
+                  </p>
+
+
+                  <a
+
+                    href={scanImage}
+
+                    download="barcode-crop.png"
+                  >
+
+                    Download Cropped Barcode
+
+                  </a>
+
+                </>
+
+              )}
+
+
+              {/* OPENCV PROCESSING */}
+
+              {preprocessingLoading && (
+
+                <p>
+
+                  Processing OpenCV barcode region...
+
+                </p>
+
+              )}
+
+
+              {/* OPENCV DETECTION RESULT */}
+
+              {preprocessingResult?.found && (
+
+                <>
+
+                  <h3>
+                    Stage 2 — Detected Region
+                  </h3>
+
+
+                  <img
+
+                    src={
+                      preprocessingResult.detectionPreview
+                    }
+
+                    alt="Detected barcode region"
+
+                    style={{
+
+                      width: "100%",
+
+                      maxWidth: "600px",
+                    }}
+                  />
+
+
+                  <h3>
+                    Stage 3 — Corrected Barcode
+                  </h3>
+
+
+                  <img
+
+                    src={
+                      preprocessingResult.correctedImage
+                    }
+
+                    alt="Corrected barcode"
+
+                    style={{
+
+                      width: "100%",
+
+                      maxWidth: "600px",
+
+                      border: "2px solid green",
+                    }}
+                  />
+
+
+                  <p>
+
+                    Resolution:{" "}
+
+                    {preprocessingResult.width}
+
+                    {" × "}
+
+                    {preprocessingResult.height}
+
+                  </p>
+
+
+                  <p>
+
+                    Processing time:{" "}
+
+                    {preprocessingResult.duration} ms
+
+                  </p>
+
+
+                  <a
+
+                    href={
+                      preprocessingResult.correctedImage
+                    }
+
+                    download="corrected-barcode.png"
+                  >
+
+                    Download Corrected Barcode
+
+                  </a>
+
+                </>
+
+              )}
+
+
+              {/* OPENCV FAILURE */}
+
+              {preprocessingResult &&
+                !preprocessingResult.found && (
+
+                  <p style={{ color: "#dc2626" }}>
+
+                    {
+
+                      preprocessingResult.reason ||
+
+                      "No barcode region detected"
+
+                    }
+
+                  </p>
+
+                )}
+
+            </div>
+
+          )}
 
       </div>
 

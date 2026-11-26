@@ -10,8 +10,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@ericblade/quagga2": "^1.14.0",
     "@paddleocr/paddleocr-js": "^0.4.2",
     "@react-oauth/google": "^0.13.5",
+    "@techstark/opencv-js": "^5.0.0-release.1",
     "@undecaf/zbar-wasm": "^0.11.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

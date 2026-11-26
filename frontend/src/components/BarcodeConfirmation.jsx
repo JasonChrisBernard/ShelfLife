@@ -5,6 +5,17 @@ import {
 } from "../services/visionService";
 
 
+const recognitionSources = {
+  aspose: "Aspose Barcode API",
+  gemini: "Gemini Vision AI",
+  "gemini-fallback": "Gemini Vision AI",
+  quagga2: "Quagga2 — Local Barcode Reader",
+  "local-barcode": "Local Barcode Reader",
+  "local-ocr": "Local OCR",
+  "zxing-wasm": "ZXing WASM",
+  opencv: "OpenCV",
+};
+
 const BarcodeConfirmation = ({
   barcodeResult,
   onScanAgain,
@@ -115,9 +126,9 @@ const BarcodeConfirmation = ({
 
       <p>
         Source:{" "}
-        {barcodeResult.source === "aspose"
-          ? "Aspose Barcode API"
-          : "Gemini Vision AI"}
+        {Object.hasOwn(recognitionSources, barcodeResult.source)
+          ? recognitionSources[barcodeResult.source]
+          : barcodeResult.source || "Unknown source"}
       </p>
 
       <label htmlFor="confirmed-barcode">
